@@ -1,0 +1,203 @@
+---
+title: "BigQuery SQL Lecture 2"
+subtitle: "Intermediate/Advanced GA4 Analysis"
+author: "Erika Barajas"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    embed-resources: true
+editor: visual
+---
+
+# BigQuery SQL Lecture 2 — Intermediate/Advanced GA4
+
+## Overview
+
+In this lecture I practiced 6 intermediate and advanced BigQuery SQL concepts using Google's public GA4 e-commerce sample dataset.
+
+# Query 1: CTEs (WITH)
+
+**What it does:** Creates named "mini tables" inside a query to structure complex logic. Here we calculate total users and new users for November 2020.
+
+``` sql
+-- Query 1: CTEs (WITH) - Total users + new users
+WITH UserInfo AS (
+  SELECT user_pseudo_id,
+    MAX(IF(event_name IN ('first_visit', 'first_open'), 1, 0)) AS is_new_user
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+  WHERE _TABLE_SUFFIX BETWEEN '20201101' AND '20201130'
+  GROUP BY user_pseudo_id
+)
+SELECT COUNT(*) AS total_users,
+  SUM(is_new_user) AS new_users
+FROM UserInfo;
+```
+
+**Output:**
+
+![](images/clipboard-323260081.png)
+
+# Query 2a: Arrays + UNNEST Pattern A
+
+**What it does:** Extracts a single value from GA4's nested event_params array using a scalar subquery. Safe and simple — does not multiply rows.
+
+``` sql
+-- Query 2a: Arrays + UNNEST Pattern A (Scalar subquery)
+SELECT TIMESTAMP_MICROS(event_timestamp) AS event_time,
+(
+  SELECT value.string_value 
+  FROM UNNEST(event_params) 
+  WHERE key = 'page_location' 
+  LIMIT 1
+) AS page_location
+FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+WHERE event_name = 'page_view'
+AND _TABLE_SUFFIX BETWEEN '20201201' AND '20201202'
+LIMIT 50;
+```
+
+**Output:**
+
+![](images/clipboard-3885573465.png)
+
+# Query 2b: Arrays + UNNEST Pattern B
+
+**What it does:** Flattens the items array so each product in a purchase event becomes its own row. This changes the grain from event-level to item-level.
+
+``` sql
+-- Query 2b: Arrays + UNNEST Pattern B (Flattening)
+SELECT event_date, item.item_name, COUNT(*) AS item_rows
+FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*` e,
+UNNEST(e.items) AS item
+WHERE e.event_name = 'purchase'
+AND _TABLE_SUFFIX BETWEEN '20201201' AND '20201231'
+GROUP BY event_date, item.item_name
+ORDER BY item_rows DESC
+LIMIT 20;
+```
+
+**Output:**
+
+![](images/clipboard-3476565031.png)
+
+# Query 3: STRING_AGG
+
+**What it does:** Combines many values into one row per group. Here it shows all distinct event types seen each day as a comma-separated list.
+
+``` sql
+-- Query 3: STRING_AGG - Events seen per day
+SELECT event_date,
+  STRING_AGG(DISTINCT event_name, ', ' ORDER BY event_name) AS events_seen
+FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+WHERE _TABLE_SUFFIX BETWEEN '20201201' AND '20201203'
+GROUP BY event_date
+ORDER BY event_date;
+```
+
+**Output:**
+
+![](images/clipboard-915291443.png)
+
+# Query 4: Joins
+
+**What it does:** Combines two CTEs using a LEFT JOIN to show daily users, purchases, and conversion rate for December 2020.
+
+``` sql
+-- Query 4: Joins - Daily users joined with daily purchases
+WITH daily_users AS (
+  SELECT event_date, COUNT(DISTINCT user_pseudo_id) AS users
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+  WHERE _TABLE_SUFFIX BETWEEN '20201201' AND '20201231'
+  GROUP BY event_date
+),
+daily_purchases AS (
+  SELECT event_date,
+    COUNT(DISTINCT (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'transaction_id')) AS purchases
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+  WHERE event_name = 'purchase'
+  AND _TABLE_SUFFIX BETWEEN '20201201' AND '20201231'
+  GROUP BY event_date
+)
+SELECT u.event_date, u.users,
+  IFNULL(p.purchases, 0) AS purchases,
+  ROUND(IFNULL(p.purchases, 0) / NULLIF(u.users, 0) * 100, 2) AS conversion_rate_pct
+FROM daily_users u
+LEFT JOIN daily_purchases p ON u.event_date = p.event_date
+ORDER BY u.event_date;
+```
+
+**Output:**
+
+![](images/clipboard-2262219601.png)
+
+# Query 5a: Window Functions - RANK
+
+**What it does:** Ranks event types by count within each day and uses QUALIFY to keep only the top 3 per day — without collapsing rows.
+
+``` sql
+-- Query 5a: Window functions - Top 3 event types per day
+WITH daily_event_counts AS (
+  SELECT event_date, event_name, COUNT(*) AS events
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+  WHERE _TABLE_SUFFIX BETWEEN '20201201' AND '20201207'
+  GROUP BY event_date, event_name
+)
+SELECT event_date, event_name, events,
+  RANK() OVER (PARTITION BY event_date ORDER BY events DESC) AS rnk
+FROM daily_event_counts
+QUALIFY rnk <= 3
+ORDER BY event_date, rnk;
+```
+
+**Output:**
+
+![](images/clipboard-39702211.png)
+
+# Query 5b: Window Functions - Rolling Average
+
+**What it does:** Calculates a rolling 7-day average of daily purchases using a window function, smoothing out day-to-day fluctuations.
+
+``` sql
+-- Query 5b: Window functions - Rolling 7-day average of purchases
+WITH daily_purchases AS (
+  SELECT PARSE_DATE('%Y%m%d', event_date) AS dt,
+    COUNT(*) AS purchases
+  FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+  WHERE event_name = 'purchase'
+  AND _TABLE_SUFFIX BETWEEN '20201201' AND '20201231'
+  GROUP BY dt
+)
+SELECT dt, purchases,
+  AVG(purchases) OVER (
+    ORDER BY dt
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+  ) AS purchases_7d_avg
+FROM daily_purchases
+ORDER BY dt;
+```
+
+**Output:**
+
+![](images/clipboard-3686061624.png)
+
+# Query 6: Approximate Functions
+
+**What it does:** Uses APPROX_COUNT_DISTINCT instead of COUNT(DISTINCT) for faster results on large datasets with minimal accuracy loss.
+
+``` sql
+-- Query 6: Approximate functions - Approx distinct users per event type
+SELECT event_name,
+  APPROX_COUNT_DISTINCT(user_pseudo_id) AS approx_users
+FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+WHERE _TABLE_SUFFIX BETWEEN '20201201' AND '20201231'
+GROUP BY event_name
+ORDER BY approx_users DESC
+LIMIT 15;
+```
+
+**Output:**
+
+![](images/clipboard-1635870111.png)
