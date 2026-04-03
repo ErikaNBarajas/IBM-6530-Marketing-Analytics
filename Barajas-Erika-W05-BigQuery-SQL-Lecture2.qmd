@@ -16,7 +16,9 @@ editor: visual
 
 ## Overview
 
-In this lecture I practiced 6 intermediate and advanced BigQuery SQL concepts using Google's public GA4 e-commerce sample dataset.
+In this lecture I practiced 6 intermediate and advanced BigQuery SQL concepts using Google's public GA4 e-commerce sample dataset.  
+
+**Published web page:** [View on GitHub Pages](https://erikanbarajas.github.io/IBM-6530-Marketing-Analytics/Barajas-Erika-W05-BigQuery-SQL-Lecture2.html)
 
 # Query 1: CTEs (WITH)
 
